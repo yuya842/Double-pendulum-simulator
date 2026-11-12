@@ -1,0 +1,284 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>二重振り子シミュレーター</title>
+    <style>
+        body {
+            font-family: 'Helvetica Neue', Arial, sans-serif;
+            background-color: #f0f2f5;
+            margin: 0;
+            padding: 20px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+        h1 {
+            color: #333;
+            margin-bottom: 10px;
+        }
+        .container {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            background: white;
+            padding: 20px;
+            border-radius: 12px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+        }
+        .controls {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 15px;
+            margin-bottom: 20px;
+            width: 100%;
+            max-width: 500px;
+        }
+        .control-group {
+            display: flex;
+            flex-direction: column;
+        }
+        label {
+            font-size: 14px;
+            font-weight: bold;
+            color: #555;
+            margin-bottom: 5px;
+        }
+        input[type="number"] {
+            padding: 8px;
+            border: 1px solid #ccc;
+            border-radius: 6px;
+            font-size: 14px;
+        }
+        .btn-group {
+            grid-column: span 2;
+            display: flex;
+            gap: 10px;
+            justify-content: center;
+        }
+        button {
+            padding: 10px 20px;
+            font-size: 14px;
+            font-weight: bold;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+        #startBtn { background-color: #007bff; color: white; }
+        #startBtn:hover { background-color: #0056b3; }
+        #resetBtn { background-color: #6c757d; color: white; }
+        #resetBtn:hover { background-color: #5a6268; }
+        canvas {
+            background-color: #fafafa;
+            border: 1px solid #e1e4e8;
+            border-radius: 8px;
+        }
+    </style>
+</head>
+<body>
+
+    <h1>二重振り子シミュレーション</h1>
+    
+    <div class="container">
+        <div class="controls">
+            <div class="control-group">
+                <label for="angle1">第1振り子の角度 (度):</label>
+                <input type="number" id="angle1" value="90" min="0" max="360">
+            </div>
+            <div class="control-group">
+                <label for="angle2">第2振り子の角度 (度):</label>
+                <input type="number" id="angle2" value="90" min="0" max="360">
+            </div>
+            <div class="btn-group">
+                <button id="startBtn">スタート</button>
+                <button id="resetBtn">リセット</button>
+            </div>
+        </div>
+
+        <canvas id="canvas" width="600" height="600"></canvas>
+    </div>
+
+    <script>
+        const canvas = document.getElementById('canvas');
+        const ctx = canvas.getContext('2d');
+        
+        // 物理定数・パラメータ
+        const g = 9.81;       // 重力加速度
+        const l1 = 150;       // 振り子1の長さ
+        const l2 = 150;       // 振り子2の長さ
+        const m1 = 10;        // 振り子1の質量
+        const m2 = 10;        // 振り子2の質量
+        const dt = 0.05;      // 時間刻み幅 (ルンゲ・クッタ用)
+
+        // 状態変数 (角度θ, 角速度ω)
+        let state = { th1: 0, om1: 0, th2: 0, om2: 0 };
+        let isRunning = false;
+        let animationId = null;
+        let trail = [];       // 先端の軌跡保存用
+        const maxTrailLength = 500;
+
+        // 原点座標 (キャンバスの中心)
+        const cx = canvas.width / 2;
+        const cy = canvas.height / 2 - 50;
+
+        // 運動方程式の微分係数を計算する関数
+        function derivatives(th1, om1, th2, om2) {
+            const dth1 = om1;
+            const dth2 = om2;
+
+            const delta = th1 - th2;
+
+            // 分母の共通部分
+            const den1 = l1 * (2 * m1 + m2 - m2 * Math.cos(2 * th1 - 2 * th2));
+            const num1 = -g * (2 * m1 + m2) * Math.sin(th1) - m2 * g * Math.sin(th1 - 2 * th2) - 2 * Math.sin(delta) * m2 * (om2 * om2 * l2 + om1 * om1 * l1 * Math.cos(delta));
+            const dom1 = num1 / den1;
+
+            const den2 = l2 * (2 * m1 + m2 - m2 * Math.cos(2 * th1 - 2 * th2));
+            const num2 = 2 * Math.sin(delta) * (om1 * om1 * l1 * (m1 + m2) + g * (m1 + m2) * Math.cos(th1) + om2 * om2 * l2 * m2 * Math.cos(delta));
+            const dom2 = num2 / den2;
+
+            return [dth1, dom1, dth2, dom2];
+        }
+
+        // 4次のルンゲ＝クッタ法（RK4）による状態更新
+        function updatePhysics() {
+            let [th1, om1, th2, om2] = [state.th1, state.om1, state.th2, state.om2];
+
+            let [k1_th1, k1_om1, k1_th2, k1_om2] = derivatives(th1, om1, th2, om2);
+            
+            let [k2_th1, k2_om1, k2_th2, k2_om2] = derivatives(
+                th1 + 0.5 * dt * k1_th1, om1 + 0.5 * dt * k1_om1,
+                th2 + 0.5 * dt * k1_th2, om2 + 0.5 * dt * k1_om2
+            );
+
+            let [k3_th1, k3_om1, k3_th2, k3_om2] = derivatives(
+                th1 + 0.5 * dt * k2_th1, om1 + 0.5 * dt * k2_om1,
+                th2 + 0.5 * dt * k2_th2, om2 + 0.5 * dt * k2_om2
+            );
+
+            let [k4_th1, k4_om1, k4_th2, k4_om2] = derivatives(
+                th1 + dt * k3_th1, om1 + dt * k3_om1,
+                th2 + dt * k3_th2, om2 + dt * k3_om2
+            );
+
+            state.th1 += (dt / 6) * (k1_th1 + 2 * k2_th1 + 2 * k3_th1 + k4_th1);
+            state.om1 += (dt / 6) * (k1_om1 + 2 * k2_om1 + 2 * k3_om1 + k4_om1);
+            state.th2 += (dt / 6) * (k1_th2 + 2 * k2_th2 + 2 * k3_th2 + k4_th2);
+            state.om2 += (dt / 6) * (k1_om2 + 2 * k2_om2 + 2 * k3_om2 + k4_om2);
+        }
+
+        // 描画処理
+        function draw() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+            // 振り子の位置計算
+            const x1 = cx + l1 * Math.sin(state.th1);
+            const y1 = cy + l1 * Math.cos(state.th1);
+            const x2 = x1 + l2 * Math.sin(state.th2);
+            const y2 = y1 + l2 * Math.cos(state.th2);
+
+            // 軌跡の保存と描画
+            if (isRunning) {
+                trail.push({ x: x2, y: y2 });
+                if (trail.length > maxTrailLength) trail.shift();
+            }
+
+            if (trail.length > 1) {
+                ctx.beginPath();
+                ctx.moveTo(trail[0].x, trail[0].y);
+                for (let i = 1; i < trail.length; i++) {
+                    ctx.lineTo(trail[i].x, trail[i].y);
+                }
+                ctx.strokeStyle = 'rgba(255, 65, 54, 0.4)';
+                ctx.lineWidth = 2;
+                ctx.stroke();
+            }
+
+            // 第1振り子の紐
+            ctx.beginPath();
+            ctx.moveTo(cx, cy);
+            ctx.lineTo(x1, y1);
+            ctx.strokeStyle = '#333';
+            ctx.lineWidth = 4;
+            ctx.stroke();
+
+            // 第2振り子の紐
+            ctx.beginPath();
+            ctx.moveTo(x1, y1);
+            ctx.lineTo(x2, y2);
+            ctx.strokeStyle = '#333';
+            ctx.lineWidth = 4;
+            ctx.stroke();
+
+            // おもり1
+            ctx.beginPath();
+            ctx.arc(x1, y1, m1, 0, 2 * Math.PI);
+            ctx.fillStyle = '#007bff';
+            ctx.fill();
+
+            // おもり2
+            ctx.beginPath();
+            ctx.arc(x2, y2, m2, 0, 2 * Math.PI);
+            ctx.fillStyle = '#28a745';
+            ctx.fill();
+
+            // 固定原点
+            ctx.beginPath();
+            ctx.arc(cx, cy, 5, 0, 2 * Math.PI);
+            ctx.fillStyle = '#333';
+            ctx.fill();
+        }
+
+        // ループ処理
+        function loop() {
+            updatePhysics();
+            draw();
+            animationId = requestAnimationFrame(loop);
+        }
+
+        // 初期化関数
+        function initSimulation() {
+            const deg1 = parseFloat(document.getElementById('angle1').value);
+            const deg2 = parseFloat(document.getElementById('angle2').value);
+
+            // 度からラジアンに変換 (物理演算用)
+            state.th1 = deg1 * Math.PI / 180;
+            state.th2 = deg2 * Math.PI / 180;
+            state.om1 = 0;
+            state.om2 = 0;
+
+            trail = [];
+            draw();
+        }
+
+        // イベントリスナー
+        document.getElementById('startBtn').addEventListener('click', () => {
+            if (!isRunning) {
+                isRunning = true;
+                document.getElementById('startBtn').innerText = '一時停止';
+                loop();
+            } else {
+                isRunning = false;
+                document.getElementById('startBtn').innerText = '再開';
+                cancelAnimationFrame(animationId);
+            }
+        });
+
+        document.getElementById('resetBtn').addEventListener('click', () => {
+            isRunning = false;
+            cancelAnimationFrame(animationId);
+            document.getElementById('startBtn').innerText = 'スタート';
+            initSimulation();
+        });
+
+        // 入力値が変わったら即座に初期位置を反映
+        document.getElementById('angle1').addEventListener('input', initSimulation);
+        document.getElementById('angle2').addEventListener('input', initSimulation);
+
+        // 初回起動時の一発目の描画
+        initSimulation();
+    </script>
+</body>
+</html>
